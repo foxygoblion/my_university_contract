@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 // 导入 OpenZeppelin 的所有权控制合约
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-// YiDengToken 合约，继承å自 ERC20 和 Ownable
+// YiDengToken 合约，继承自 ERC20 和 Ownable
 contract YiDengToken is ERC20, Ownable {
     // 定义 ETH 兑换 YD 的比率：1 ETH = 1000 YD
     uint256 public constant TOKENS_PER_ETH = 1000;
@@ -26,7 +26,30 @@ contract YiDengToken is ERC20, Ownable {
     function decimals() public view virtual override returns (uint8) {
         return 0;
     }
-    // 事件定义
+    
+    // 多签相关变量
+    address[] public signers;               // 多签人列表
+    uint256 public requiredSignatures;      // 需要的签名数量
+    uint256 public withdrawalId;            // 提款请求ID计数器
+    
+    // 提款请求结构体
+    struct WithdrawalRequest {
+        uint256 amount;                     // 提款金额
+        uint256 signatureCount;             // 已签名数量
+        address recipient;                  // 接收者地址
+        bool executed;                      // 是否已执行
+        mapping(address => bool) signatures;// 签名记录
+    }
+    
+    // 提款请求映射
+    mapping(uint256 => WithdrawalRequest) public withdrawalRequests;
+    
+    // 新增事件
+    event WithdrawalRequested(uint256 indexed withdrawalId, uint256 amount, address recipient);
+    event WithdrawalSigned(uint256 indexed withdrawalId, address signer);
+    event WithdrawalExecuted(uint256 indexed withdrawalId, uint256 amount, address recipient);
+    
+    // 原有事件定义
     event TokensPurchased(
         address indexed buyer,
         uint256 ethAmount,
@@ -49,6 +72,10 @@ contract YiDengToken is ERC20, Ownable {
         teamAllocation = (MAX_SUPPLY * 20) / 100; // 20% 分配给团队
         marketingAllocation = (MAX_SUPPLY * 10) / 100; // 10% 分配给市场营销
         communityAllocation = (MAX_SUPPLY * 10) / 100; // 10% 分配给社区
+        
+        // 初始化多签，默认只有合约所有者
+        signers.push(msg.sender);
+        requiredSignatures = 1;
     }
 
     // 初始代币分配函数，只能由合约所有者调用
@@ -115,10 +142,137 @@ contract YiDengToken is ERC20, Ownable {
         return MAX_SUPPLY - totalSupply();
     }
 
-    // 合约所有者提取合约中的 ETH
-    function withdrawETH() external onlyOwner {
-        //多签 
-        payable(owner()).transfer(address(this).balance);
+    // 多签相关功能 ----------------------------------------
+    
+    // 检查是否是多签成员
+    modifier onlySigner() {
+        bool isSigner = false;
+        for (uint i = 0; i < signers.length; i++) {
+            if (signers[i] == msg.sender) {
+                isSigner = true;
+                break;
+            }
+        }
+        require(isSigner, "Not a signer");
+        _;
+    }
+    
+    // 添加多签成员（只有合约所有者可调用）
+    function addSigner(address newSigner) external onlyOwner {
+        require(newSigner != address(0), "Invalid address");
+        
+        // 检查是否已经是多签成员
+        for (uint i = 0; i < signers.length; i++) {
+            require(signers[i] != newSigner, "Already a signer");
+        }
+        
+        signers.push(newSigner);
+    }
+    
+    // 移除多签成员（只有合约所有者可调用）
+    function removeSigner(address signerToRemove) external onlyOwner {
+        require(signers.length > requiredSignatures, "Cannot remove: too few signers");
+        
+        uint indexToRemove = signers.length;
+        for (uint i = 0; i < signers.length; i++) {
+            if (signers[i] == signerToRemove) {
+                indexToRemove = i;
+                break;
+            }
+        }
+        
+        require(indexToRemove < signers.length, "Signer not found");
+        
+        // 将最后一个元素移到要删除的位置，然后删除最后一个元素
+        signers[indexToRemove] = signers[signers.length - 1];
+        signers.pop();
+    }
+    
+    // 修改所需签名数量（只有合约所有者可调用）
+    function updateRequiredSignatures(uint256 newRequiredSignatures) external onlyOwner {
+        require(newRequiredSignatures > 0, "Must require at least 1 signature");
+        require(newRequiredSignatures <= signers.length, "Cannot require more signatures than signers");
+        
+        requiredSignatures = newRequiredSignatures;
+    }
+    
+    // 发起提款请求（任何多签成员都可以发起）
+    function requestWithdrawal(uint256 amount, address recipient) external onlySigner {
+        require(amount > 0, "Amount must be greater than 0");
+        require(recipient != address(0), "Invalid recipient address");
+        require(address(this).balance >= amount, "Insufficient contract balance");
+        
+        uint256 requestId = withdrawalId;
+        withdrawalId += 1;
+        
+        WithdrawalRequest storage request = withdrawalRequests[requestId];
+        request.amount = amount;
+        request.recipient = recipient;
+        request.executed = false;
+        request.signatureCount = 1;  // 创建者自动签名
+        request.signatures[msg.sender] = true;
+        
+        emit WithdrawalRequested(requestId, amount, recipient);
+        emit WithdrawalSigned(requestId, msg.sender);
+        
+        // 如果只需要一个签名，则直接执行
+        if (requiredSignatures == 1) {
+            executeWithdrawal(requestId);
+        }
+    }
+    
+    // 签名提款请求
+    function signWithdrawal(uint256 requestId) external onlySigner {
+        WithdrawalRequest storage request = withdrawalRequests[requestId];
+        
+        require(!request.executed, "Withdrawal already executed");
+        require(!request.signatures[msg.sender], "Already signed");
+        
+        request.signatures[msg.sender] = true;
+        request.signatureCount += 1;
+        
+        emit WithdrawalSigned(requestId, msg.sender);
+        
+        // 检查是否达到所需签名数量
+        if (request.signatureCount >= requiredSignatures) {
+            executeWithdrawal(requestId);
+        }
+    }
+    
+    // 执行提款（内部函数）
+    function executeWithdrawal(uint256 requestId) internal {
+        WithdrawalRequest storage request = withdrawalRequests[requestId];
+        
+        require(!request.executed, "Withdrawal already executed");
+        require(request.signatureCount >= requiredSignatures, "Not enough signatures");
+        require(address(this).balance >= request.amount, "Insufficient contract balance");
+        
+        request.executed = true;
+        
+        (bool success, ) = request.recipient.call{value: request.amount}("");
+        require(success, "ETH transfer failed");
+        
+        emit WithdrawalExecuted(requestId, request.amount, request.recipient);
+    }
+    
+    // 获取多签成员数量
+    function getSignerCount() external view returns (uint256) {
+        return signers.length;
+    }
+    
+    // 检查地址是否为多签成员
+    function isSigner(address account) external view returns (bool) {
+        for (uint i = 0; i < signers.length; i++) {
+            if (signers[i] == account) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    // 检查是否已经签名特定提款请求
+    function hasSignedWithdrawal(uint256 requestId, address signer) external view returns (bool) {
+        return withdrawalRequests[requestId].signatures[signer];
     }
 
     // 允许合约接收ETH
