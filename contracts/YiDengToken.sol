@@ -76,7 +76,6 @@ contract YiDengToken is ERC20, Ownable {
         // 初始化多签，默认只有合约所有者
         signers.push(msg.sender);
         requiredSignatures = 1;
-        _transferOwnership(msg.sender);
     }
 
     // 初始代币分配函数，只能由合约所有者调用
@@ -103,7 +102,7 @@ contract YiDengToken is ERC20, Ownable {
     function buyWithETH() external payable {
         require(msg.value > 0, "Must send ETH");
 
-        uint256 tokenAmount = msg.value * TOKENS_PER_ETH;
+        uint256 tokenAmount = (msg.value * TOKENS_PER_ETH) / 1 ether;
         require(
             totalSupply() + tokenAmount <= MAX_SUPPLY,
             "Would exceed max supply"
@@ -281,8 +280,4 @@ contract YiDengToken is ERC20, Ownable {
 
     // 允许合约接收ETH（当调用不存在的函数时）
     fallback() external payable {}
-
-    function withdrawETH() external onlyOwner {
-        payable(owner()).transfer(address(this).balance);
-    }
 }
