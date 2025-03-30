@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
 // 导入 OpenZeppelin 的 ERC20 标准合约
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -67,7 +67,7 @@ contract YiDengToken is ERC20, Ownable {
     );
 
     // 构造函数：初始化代币名称为 "YiDeng Token"，符号为 "YD"
-    constructor() ERC20("YiDeng Token", "YD") Ownable(msg.sender) {
+    constructor() ERC20("YiDeng Token", "YD") {
         // 计算各个分配额度
         teamAllocation = (MAX_SUPPLY * 20) / 100; // 20% 分配给团队
         marketingAllocation = (MAX_SUPPLY * 10) / 100; // 10% 分配给市场营销
@@ -76,6 +76,7 @@ contract YiDengToken is ERC20, Ownable {
         // 初始化多签，默认只有合约所有者
         signers.push(msg.sender);
         requiredSignatures = 1;
+        _transferOwnership(msg.sender);
     }
 
     // 初始代币分配函数，只能由合约所有者调用
@@ -145,15 +146,15 @@ contract YiDengToken is ERC20, Ownable {
     // 多签相关功能 ----------------------------------------
     
     // 检查是否是多签成员
-    modifier onlySigner() {
-        bool isSigner = false;
+    modifier onlyMultiSigner() {
+        bool isMember = false;
         for (uint i = 0; i < signers.length; i++) {
             if (signers[i] == msg.sender) {
-                isSigner = true;
+                isMember = true;
                 break;
             }
         }
-        require(isSigner, "Not a signer");
+        require(isMember, "Not a sign member");
         _;
     }
     
@@ -197,7 +198,7 @@ contract YiDengToken is ERC20, Ownable {
     }
     
     // 发起提款请求（任何多签成员都可以发起）
-    function requestWithdrawal(uint256 amount, address recipient) external onlySigner {
+    function requestWithdrawal(uint256 amount, address recipient) external onlyMultiSigner {
         require(amount > 0, "Amount must be greater than 0");
         require(recipient != address(0), "Invalid recipient address");
         require(address(this).balance >= amount, "Insufficient contract balance");
@@ -222,7 +223,7 @@ contract YiDengToken is ERC20, Ownable {
     }
     
     // 签名提款请求
-    function signWithdrawal(uint256 requestId) external onlySigner {
+    function signWithdrawal(uint256 requestId) external onlyMultiSigner {
         WithdrawalRequest storage request = withdrawalRequests[requestId];
         
         require(!request.executed, "Withdrawal already executed");
@@ -280,4 +281,8 @@ contract YiDengToken is ERC20, Ownable {
 
     // 允许合约接收ETH（当调用不存在的函数时）
     fallback() external payable {}
+
+    function withdrawETH() external onlyOwner {
+        payable(owner()).transfer(address(this).balance);
+    }
 }

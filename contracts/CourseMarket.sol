@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
-import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "./YiDengToken.sol";
 import "./CourseCertificate.sol";
 
@@ -10,105 +10,82 @@ import "./CourseCertificate.sol";
  * @title CourseMarket
  * @notice 一灯教育课程市场合约
  */
-contract CourseMarket is Ownable {
+contract CourseMarket is AccessControl, ReentrancyGuard {
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant TEACHER_ROLE = keccak256("TEACHER_ROLE");
+
     // 合约实例
-    YiDengToken public yiDengToken;
+    YiDengToken public token;
     CourseCertificate public certificate;
 
     // 课程结构体
     struct Course {
         string web2CourseId; // Web2平台的课程ID
-        string name; // 课程名称
+        address teacher; // 课程创建者地址
         uint256 price; // 课程价格(YD代币)
         bool isActive; // 课程是否可购买
-        address creator; // 课程创建者地址
+        uint256 studentCount; // 学生人数
+        mapping(address => bool) enrolledStudents; // 学生购买记录
     }
 
     // 合约状态变量
-    mapping(uint256 => Course) public courses; // courseId => Course
-    mapping(string => uint256) public web2ToCourseId; // web2CourseId => courseId
-    mapping(address => mapping(uint256 => bool)) public userCourses; // 用户购买记录
-    uint256 public courseCount; // 课程总数
+    mapping(string => Course) public courses; // courseId => Course
+    string[] public courseIds; // 课程ID数组
 
     // 事件
-    event CoursePurchased(
-        address indexed buyer,
-        uint256 indexed courseId,
-        string web2CourseId
-    );
-    event CourseCompleted(
-        address indexed student,
-        uint256 indexed courseId,
-        uint256 certificateId
-    );
-    event CourseAdded(
-        uint256 indexed courseId,
-        string web2CourseId,
-        string name
-    );
+    event CourseCreated(string indexed web2CourseId, address indexed teacher, uint256 price);
+    event CourseEnrolled(string indexed web2CourseId, address indexed student);
+    event CourseCompleted(string indexed web2CourseId, address indexed student);
 
     /**
      * @notice 构造函数
-     * @param _tokenAddress YiDeng代币合约地址
-     * @param _certificateAddress 证书NFT合约地址
+     * @param _token YiDeng代币合约地址
+     * @param _certificate 证书NFT合约地址
      */
-    constructor(address _tokenAddress, address _certificateAddress) {
-        yiDengToken = YiDengToken(_tokenAddress);
-        certificate = CourseCertificate(_certificateAddress);
+    constructor(address _token, address _certificate) {
+        token = YiDengToken(_token);
+        certificate = CourseCertificate(_certificate);
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
     }
 
     /**
-     * @notice 添加新课程
+     * @notice 创建新课程
      * @param web2CourseId Web2平台的课程ID
-     * @param name 课程名称
      * @param price 课程价格(YD代币)
      */
-    function addCourse(
-        string memory web2CourseId,
-        string memory name,
+    function createCourse(
+        string calldata web2CourseId,
         uint256 price
-    ) external onlyOwner {
-        require(
-            bytes(web2CourseId).length > 0,
-            "Web2 course ID cannot be empty"
-        );
-        require(web2ToCourseId[web2CourseId] == 0, "Course already exists");
+    ) external onlyRole(TEACHER_ROLE) {
+        require(!courses[web2CourseId].isActive, "Course already exists");
+        require(price > 0, "Price must be greater than 0");
 
-        courseCount++;
+        Course storage course = courses[web2CourseId];
+        course.web2CourseId = web2CourseId;
+        course.teacher = msg.sender;
+        course.price = price;
+        course.isActive = true;
+        course.studentCount = 0;
 
-        courses[courseCount] = Course({
-            web2CourseId: web2CourseId,
-            name: name,
-            price: price,
-            isActive: true,
-            creator: msg.sender
-        });
-
-        web2ToCourseId[web2CourseId] = courseCount;
-
-        emit CourseAdded(courseCount, web2CourseId, name);
+        courseIds.push(web2CourseId);
+        emit CourseCreated(web2CourseId, msg.sender, price);
     }
 
     /**
      * @notice 购买课程
      * @param web2CourseId Web2平台的课程ID
      */
-    function purchaseCourse(string memory web2CourseId) external {
-        uint256 courseId = web2ToCourseId[web2CourseId];
-        require(courseId > 0, "Course does not exist");
+    function enrollCourse(string calldata web2CourseId) external nonReentrant {
+        Course storage course = courses[web2CourseId];
+        require(course.isActive, "Course does not exist");
+        require(!course.enrolledStudents[msg.sender], "Already enrolled");
 
-        Course memory course = courses[courseId];
-        require(course.isActive, "Course not active");
-        require(!userCourses[msg.sender][courseId], "Already purchased");
+        require(token.transferFrom(msg.sender, course.teacher, course.price), "Payment failed");
 
-        // 转移代币
-        require(
-            yiDengToken.transferFrom(msg.sender, course.creator, course.price),
-            "Transfer failed"
-        );
-
-        userCourses[msg.sender][courseId] = true;
-        emit CoursePurchased(msg.sender, courseId, web2CourseId);
+        course.enrolledStudents[msg.sender] = true;
+        course.studentCount++;
+        emit CourseEnrolled(web2CourseId, msg.sender);
     }
 
     /**
@@ -116,81 +93,56 @@ contract CourseMarket is Ownable {
      * @param student 学生地址
      * @param web2CourseId Web2平台的课程ID
      */
-    function verifyCourseCompletion(
+    function completeCourse(
+        string calldata web2CourseId,
         address student,
-        string memory web2CourseId
-    ) external onlyOwner {
-        uint256 courseId = web2ToCourseId[web2CourseId];
-        require(courseId > 0, "Course does not exist");
-        require(userCourses[student][courseId], "Course not purchased");
-        require(
-            !certificate.hasCertificate(student, web2CourseId),
-            "Certificate already issued"
-        );
+        string memory metadataURI
+    ) external onlyRole(TEACHER_ROLE) {
+        Course storage course = courses[web2CourseId];
+        require(course.isActive, "Course does not exist");
+        require(course.enrolledStudents[student], "Student not enrolled");
+        require(!certificate.hasCertificate(student, web2CourseId), "Certificate already issued");
 
-        string memory metadataURI = generateCertificateURI(
-            student,
-            web2CourseId
-        );
-        uint256 tokenId = certificate.mintCertificate(
-            student,
-            web2CourseId,
-            metadataURI
-        );
-
-        emit CourseCompleted(student, courseId, tokenId);
+        certificate.mintCertificate(student, web2CourseId, metadataURI);
+        emit CourseCompleted(web2CourseId, student);
     }
 
     /**
-     * @notice 批量验证课程完成
-     * @param students 学生地址数组
+     * @notice 获取课程信息
      * @param web2CourseId Web2平台的课程ID
      */
-    function batchVerifyCourseCompletion(
-        address[] memory students,
-        string memory web2CourseId
-    ) external onlyOwner {
-        for (uint256 i = 0; i < students.length; i++) {
-            if (
-                userCourses[students[i]][web2ToCourseId[web2CourseId]] &&
-                !certificate.hasCertificate(students[i], web2CourseId)
-            ) {
-                verifyCourseCompletion(students[i], web2CourseId);
-            }
-        }
+    function getCourse(string calldata web2CourseId) external view returns (
+        address teacher,
+        uint256 price,
+        bool isActive,
+        uint256 studentCount
+    ) {
+        Course storage course = courses[web2CourseId];
+        return (course.teacher, course.price, course.isActive, course.studentCount);
     }
 
     /**
      * @notice 检查用户是否已购买课程
-     * @param user 用户地址
-     * @param web2CourseId Web2平台的课程ID
-     */
-    function hasCourse(
-        address user,
-        string memory web2CourseId
-    ) external view returns (bool) {
-        uint256 courseId = web2ToCourseId[web2CourseId];
-        require(courseId > 0, "Course does not exist");
-        return userCourses[user][courseId];
-    }
-
-    /**
-     * @notice 生成证书元数据URI
      * @param student 学生地址
      * @param web2CourseId Web2平台的课程ID
      */
-    function generateCertificateURI(
-        address student,
-        string memory web2CourseId
-    ) internal pure returns (string memory) {
-        return
-            string(
-                abi.encodePacked(
-                    "https://api.yideng.com/certificate/",
-                    web2CourseId,
-                    "/",
-                    Strings.toHexString(student)
-                )
-            );
+    function isEnrolled(string calldata web2CourseId, address student) external view returns (bool) {
+        return courses[web2CourseId].enrolledStudents[student];
+    }
+
+    /**
+     * @notice 获取课程总数
+     */
+    function getCourseCount() external view returns (uint256) {
+        return courseIds.length;
+    }
+
+    /**
+     * @notice 获取课程ID
+     * @param index 索引
+     */
+    function getCourseId(uint256 index) external view returns (string memory) {
+        require(index < courseIds.length, "Index out of bounds");
+        return courseIds[index];
     }
 }

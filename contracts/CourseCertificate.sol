@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
 // 导入所需的 OpenZeppelin 合约
 import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/utils/Counters.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 
 /**
@@ -12,11 +11,9 @@ import "@openzeppelin/contracts/utils/Strings.sol";
  * @notice 易登课程证书NFT合约，用于发放课程完成证书
  */
 contract CourseCertificate is ERC721, AccessControl {
-    using Counters for Counters.Counter;
     using Strings for uint256;
 
-    // NFT ID计数器
-    Counters.Counter private _tokenIds;
+    uint256 private _tokenIds;
 
     // 定义铸造者角色，只有拥有该角色才能铸造证书
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -60,19 +57,16 @@ contract CourseCertificate is ERC721, AccessControl {
      */
     function mintCertificate(
         address student,
-        string memory web2CourseId,
+        string calldata web2CourseId,
         string memory metadataURI
     ) external onlyRole(MINTER_ROLE) returns (uint256) {
         require(student != address(0), "Invalid student address");
 
-        // 生成新的tokenId
-        _tokenIds.increment();
-        uint256 newTokenId = _tokenIds.current();
+        _tokenIds++;
+        uint256 newTokenId = _tokenIds;
 
-        // 铸造NFT
         _safeMint(student, newTokenId);
 
-        // 存储证书数据
         certificates[newTokenId] = CertificateData({
             web2CourseId: web2CourseId,
             student: student,
@@ -80,7 +74,6 @@ contract CourseCertificate is ERC721, AccessControl {
             metadataURI: metadataURI
         });
 
-        // 记录学生的证书
         studentCertificates[web2CourseId][student].push(newTokenId);
 
         emit CertificateMinted(newTokenId, web2CourseId, student);
@@ -94,7 +87,7 @@ contract CourseCertificate is ERC721, AccessControl {
     function tokenURI(
         uint256 tokenId
     ) public view override returns (string memory) {
-        require(_exists(tokenId), "Certificate does not exist");
+        if (_ownerOf(tokenId) == address(0)) revert("Certificate does not exist");
         return certificates[tokenId].metadataURI;
     }
 
@@ -105,7 +98,7 @@ contract CourseCertificate is ERC721, AccessControl {
      */
     function hasCertificate(
         address student,
-        string memory web2CourseId
+        string calldata web2CourseId
     ) public view returns (bool) {
         return studentCertificates[web2CourseId][student].length > 0;
     }
@@ -117,7 +110,7 @@ contract CourseCertificate is ERC721, AccessControl {
      */
     function getStudentCertificates(
         address student,
-        string memory web2CourseId
+        string calldata web2CourseId
     ) public view returns (uint256[] memory) {
         return studentCertificates[web2CourseId][student];
     }
