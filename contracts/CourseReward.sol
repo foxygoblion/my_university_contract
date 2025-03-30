@@ -26,7 +26,7 @@ contract CourseReward is AccessControl, ReentrancyGuard {
     event RewardClaimed(string indexed web2CourseId, address indexed student, uint256 amount);
 
     constructor(address _token, address _certificate) {
-        token = YiDengToken(_token);
+        token = YiDengToken(payable(_token));
         certificate = CourseCertificate(_certificate);
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(ADMIN_ROLE, msg.sender);

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+import "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
 import "@chainlink/contracts/src/v0.8/ChainlinkClient.sol";
-import "@chainlink/contracts/src/v0.8/AutomationCompatible.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./CourseCertificate.sol";
 
@@ -68,7 +70,7 @@ contract AutomatedCourseOracle is
         bytes32 _jobId,
         address _certificateAddress
     ) {
-        setChainlinkToken(_link);
+        _setChainlinkToken(_link);
         oracle = _oracle;
         jobId = _jobId;
         fee = (1 * LINK_DIVISIBILITY) / 10; // 0.1 LINK
@@ -154,7 +156,7 @@ contract AutomatedCourseOracle is
     function requestProgressUpdate(bytes32 requestId) internal {
         ProgressCheck memory check = progressChecks[requestId];
 
-        Chainlink.Request memory req = buildChainlinkRequest(
+        Chainlink.Request memory req = _buildChainlinkRequest(
             jobId,
             address(this),
             this.fulfillProgressCheck.selector
@@ -170,10 +172,10 @@ contract AutomatedCourseOracle is
             )
         );
 
-        req.add("get", url);
-        req.add("path", "completed");
+        req._add("get", url);
+        req._add("path", "completed");
 
-        sendChainlinkRequest(req, fee);
+        _sendChainlinkRequest(req, fee);
     }
 
     /**
@@ -260,7 +262,7 @@ contract AutomatedCourseOracle is
      * @notice 提取LINK代币
      */
     function withdrawLink() external onlyOwner {
-        LinkTokenInterface link = LinkTokenInterface(chainlinkTokenAddress());
+        LinkTokenInterface link = LinkTokenInterface(_chainlinkTokenAddress());
         require(
             link.transfer(msg.sender, link.balanceOf(address(this))),
             "Unable to transfer"

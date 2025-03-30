@@ -1,5 +1,7 @@
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
+import "@nomicfoundation/hardhat-ignition";
+import "@typechain/hardhat";
 import * as dotenv from "dotenv";
 
 dotenv.config();
@@ -17,8 +19,10 @@ const config: HardhatUserConfig = {
     apiKey: process.env.ETHERSCAN_API_KEY,
   },
   typechain: {
-    outDir: "typechain",
+    outDir: "typechain-types",
     target: "ethers-v6",
+    alwaysGenerateOverloads: false, // 是否总是生成重载
+    dontOverrideCompile: false, // 是否覆盖编译
   },
 };
 
