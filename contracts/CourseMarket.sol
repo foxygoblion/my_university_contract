@@ -111,6 +111,64 @@ contract CourseMarket is Ownable {
         emit CoursePurchased(msg.sender, courseId, web2CourseId);
     }
 
+
+    /**
+    * @notice 批量购买课程
+    * @param web2CourseIds Web2平台的课程ID数组
+    */
+    function purchaseCourse(string[] calldata web2CourseIds) external {
+        require(web2CourseIds.length > 0, "No courses specified");
+
+        uint256 totalPrice = 0;
+        mapping(address => uint256) memory creatorPayments; // 记录每个创建者的总付款
+        
+        // 第一步：验证所有课程并计算总价
+        for (uint256 i = 0; i < web2CourseIds.length; i++) {
+            uint256 courseId = web2ToCourseId[web2CourseIds[i]];
+            require(courseId > 0, "Course does not exist");
+
+            Course memory course = courses[courseId];
+            require(course.isActive, "Course not active");
+            require(!userCourses[msg.sender][courseId], "Already purchased");
+
+            totalPrice += course.price;
+            creatorPayments[course.creator] += course.price;
+        }
+
+        // 第二步：执行批量转账
+        address[] memory creators = new address[](web2CourseIds.length);
+        uint256[] memory amounts = new uint256[](web2CourseIds.length);
+        uint256 creatorCount = 0;
+
+        // 收集所有不同的创建者和他们的付款总额
+        for (uint256 i = 0; i < web2CourseIds.length; i++) {
+            uint256 courseId = web2ToCourseId[web2CourseIds[i]];
+            Course memory course = courses[courseId];
+            
+            if (creatorPayments[course.creator] > 0) {
+                creators[creatorCount] = course.creator;
+                amounts[creatorCount] = creatorPayments[course.creator];
+                creatorPayments[course.creator] = 0; // 防止重复添加
+                creatorCount++;
+            }
+        }
+
+        // 执行批量转账
+        for (uint256 i = 0; i < creatorCount; i++) {
+            require(
+                yiDengToken.transferFrom(msg.sender, creators[i], amounts[i]),
+                "Transfer failed"
+            );
+        }
+
+        // 第三步：更新用户购买记录并触发事件
+        for (uint256 i = 0; i < web2CourseIds.length; i++) {
+            uint256 courseId = web2ToCourseId[web2CourseIds[i]];
+            userCourses[msg.sender][courseId] = true;
+            emit CoursePurchased(msg.sender, courseId, web2CourseIds[i]);
+        }
+    }
+    
     /**
      * @notice 验证课程完成并发放证书
      * @param student 学生地址
